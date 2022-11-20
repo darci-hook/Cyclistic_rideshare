@@ -1,0 +1,211 @@
+--Combine all tables using UNION ALL
+SELECT * 
+FROM `portfolio-364622.Rideshare.202110_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202111_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202112_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202201_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202202_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202203_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202204_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202205_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202206_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202207_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202208_tripdata`
+
+UNION ALL
+
+SELECT * 
+FROM `portfolio-364622.Rideshare.202209_tripdata`
+ORDER BY started_at;
+--Saved results as BigQuery Table "FY2022_tripdata_merged"
+
+--This query is 2 CTEs within one SQL query. To do this you nest the CTEs within a single WITH clause at the beginning.
+--CTE #1 - Converted UTC datetime to local "Chicago" time
+--CTE #2 - 
+  --Split TIMESTAMP for "started_at" and "ended_at" columns into start and end Date and time colunms using EXTRACT function. 
+  --Calculated trip_duration in seconds using DATE_DIFF function.
+--Converted date to day of week using FORMAT_DATE function. '%A' is the format string for day of the week int the function
+--Removed any negative trip durations (i.e., start_time beginning after end_time)
+WITH 
+  timezone
+  AS
+  (SELECT *, 
+  DATETIME(started_at, "America/Chicago") AS started_at_localtime,
+  DATETIME(ended_at, "America/Chicago") AS ended_at_localtime
+  FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged`),
+  tripdata_cleaned
+  AS
+  (SELECT *,
+  EXTRACT(DATE FROM started_at_localtime) AS start_date,
+  EXTRACT(TIME FROM started_at_localtime) AS start_time,
+  EXTRACT(DATE FROM ended_at_localtime) AS end_date,
+  EXTRACT (TIME FROM ended_at_localtime) AS end_time,
+  DATE_DIFF(ended_at_localtime, started_at_localtime, second) AS trip_duration_secs
+  FROM timezone
+  )
+SELECT *,
+  FORMAT_DATE('%A',start_date) as day_of_week
+FROM tripdata_cleaned
+WHERE trip_duration_secs > 0
+ORDER BY started_at
+--Saved Results as BigQuery Table 'fy2022_tripdata_merged2'
+
+--Determine NULL values in start_station_name and end_station_name
+--Due to large number of Nulls for station names, have to use Lat/Long for location analysis
+SELECT *
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+WHERE start_station_name IS NULL
+--894,990 rows with Null start_station_name
+
+SELECT *
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+WHERE end_station_name IS NULL
+--957,926 rows with Null end_station_name
+
+--Determine max and min trip durations
+SELECT member_casual,
+  MIN(trip_duration_secs) AS min,
+  MAX(trip_duration_secs) AS max
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+GROUP BY member_casual
+
+SELECT *
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+WHERE member_casual="casual"
+ORDER BY trip_duration_secs DESC
+
+SELECT *
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+WHERE member_casual="member"
+ORDER BY trip_duration_secs DESC
+
+--Count number of trips by trip duration groups (5 mins). 
+--Determine total trips, average trip duration, trip durations <=> 24 hours
+--Grouped by Rideable Type and Member or Casual rider
+SELECT member_casual, rideable_type,
+  COUNT (ride_id) AS total_trip_count,
+  AVG(DISTINCT trip_duration_secs) AS avg_trip_duration,
+  COUNTIF(trip_duration_secs > 86400) AS trip_greater_24hours,
+  COUNTIF(trip_duration_secs <= 86400) AS trip_24hours_less,
+  COUNTIF(trip_duration_secs BETWEEN 0 AND 300) AS trip_duration_0to5mins,
+  COUNTIF(trip_duration_secs BETWEEN 301 AND 600) AS trip_duration_5to10mins,
+  COUNTIF(trip_duration_secs BETWEEN 601 AND 900) AS trip_duration_10to15mins,
+  COUNTIF(trip_duration_secs BETWEEN 901 AND 1200) AS trip_duration_15to20mins,
+  COUNTIF(trip_duration_secs BETWEEN 1201 AND 1500) AS trip_duration_20to25mins,
+  COUNTIF(trip_duration_secs BETWEEN 1501 AND 1800) AS trip_duration_25to30mins,
+  COUNTIF(trip_duration_secs > 1800) AS trip_duration_greater30mins
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+GROUP BY member_casual, rideable_type
+--Saved Results as local .csv file ('Trip_duration_grouped.csv')
+
+--Difference in rideable_type between member and casual riders
+SELECT member_casual, rideable_type,
+  COUNT(rideable_type) AS ride_count
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+GROUP BY member_casual, rideable_type
+--Saved Results as local .csv file ('Ride_count.csv')
+
+--Determine differences in time of day preference (Morning, Afternoon, Evening, Night) between Member and Casual Rider
+WITH time_day
+AS 
+(SELECT *,
+CASE 
+  WHEN start_time BETWEEN "06:00:00" AND "11:59:59" THEN "Morning"
+  WHEN start_time BETWEEN "12:00:00" AND "17:59:59" THEN "Afternoon"
+  WHEN start_time BETWEEN "18:00:00" AND "23:59:59" THEN "Evening"
+  WHEN start_time BETWEEN "00:00:00" AND "05:59:59" THEN "Night"
+  ELSE ""
+END AS time_of_day
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`)
+SELECT member_casual, rideable_type, time_of_day,
+  COUNT(time_of_day) AS num_of_rides
+FROM time_day
+GROUP BY member_casual, rideable_type, time_of_day
+ORDER BY member_casual, time_of_day
+--Saved Results as local .csv file ('Time_of_day_pref.csv')
+
+--Determine count of distinct routes. No distinct routes per locations for trip start/end discovered.
+--Query will not be used for further data analysis or visualization
+WITH trip_route
+AS
+(SELECT *,
+  CONCAT(start_station_id,", ",end_station_id) AS route
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`)
+SELECT rideable_type, member_casual,route,
+  COUNT(DISTINCT route) AS route_count
+FROM trip_route
+GROUP BY rideable_type, member_casual, route
+ORDER BY route_count DESC
+
+SELECT member_casual, start_station_id,
+  COUNT(DISTINCT start_station_id) AS station_count
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`
+GROUP BY member_casual, start_station_id
+ORDER BY station_count DESC
+
+--Determine trip count and average trip duration per start month.
+WITH fy22_month
+AS
+(SELECT *,
+CASE
+  WHEN start_date BETWEEN "2021-09-30" AND "2021-10-31" THEN "October"
+  WHEN start_date BETWEEN "2021-11-01" AND "2021-11-30" THEN "November"
+  WHEN start_date BETWEEN "2021-12-01" AND "2021-12-31" THEN "December"
+  WHEN start_date BETWEEN "2022-01-01" AND "2022-01-31" THEN "January"
+  WHEN start_date BETWEEN "2022-02-01" AND "2022-02-28" THEN "February"
+  WHEN start_date BETWEEN "2022-03-01" AND "2022-03-31" THEN "March"
+  WHEN start_date BETWEEN "2022-04-01" AND "2022-04-30" THEN "April"
+  WHEN start_date BETWEEN "2022-05-01" AND "2022-05-31" THEN "May"
+  WHEN start_date BETWEEN "2022-06-01" AND "2022-06-30" THEN "June"
+  WHEN start_date BETWEEN "2022-07-01" AND "2022-07-31" THEN "July"
+  WHEN start_date BETWEEN "2022-08-01" AND "2022-08-31" THEN "August"
+  WHEN start_date BETWEEN "2022-09-01" AND "2022-09-30" THEN "September"
+  ELSE ""
+END AS month
+FROM `portfolio-364622.Rideshare.fy2022_tripdata_merged2`)
+SELECT member_casual, month,
+  COUNT (ride_id) AS trip_count,
+  AVG (DISTINCT trip_duration_secs) AS avg_trip_duration
+FROM fy22_month
+GROUP BY member_casual, month
+--Saved results as local.csv ('Trips_per_month.csv')
